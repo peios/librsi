@@ -16,12 +16,11 @@ crate-type = ["cdylib", "staticlib"]
 peios-cabi = { git = "https://github.com/peios/peios-cabi.git" }
 # The LCS semantic core: RSI request parsers, status codes, the registry data model —
 # the same pure (`core`-only) primitives the kernel uses, so the wire handling is
-# guaranteed compatible. Userspace leaves the `kernel` feature off. Local path: pkm
-# has unpushed changes.
-lcs-core = { path = "../pkm/crates/lcs-core" }
+# guaranteed compatible. Userspace leaves the `kernel` feature off.
+lcs-core = { git = "https://github.com/peios/pkm.git" }
 # Generated Rust mirror of the PKM kernel ABI (RSI constants + #[repr(C)] structs —
 # the Rust analog of `#include <pkm/*.h>`). no_std, definitions only.
-peios-uapi = { path = "../pkm/uapi/rust", default-features = false }
+peios-uapi = { git = "https://github.com/peios/pkm.git", default-features = false }
 # Raw libc FFI for the errno constants the entry points report, the source-device
 # open/close, and the `abort` in the panic handler. no_std.
 libc = { version = "0.2", default-features = false }
