@@ -49,13 +49,14 @@ pub struct rsi_hive {
 /// name pointer/length, GUIDs, and flags; the `_pad*` fields stay zero (the kernel
 /// rejects a non-zero pad).
 fn marshal_hive(h: &rsi_hive) -> reg_src_hive_entry {
-    let mut e = reg_src_hive_entry::default();
-    e.name_len = h.name_len;
-    e.name_ptr = h.name as usize as u64;
-    e.root_guid = h.root_guid;
-    e.flags = h.flags;
-    e.scope_guid = h.scope_guid;
-    e
+    reg_src_hive_entry {
+        name_len: h.name_len,
+        name_ptr: h.name as usize as u64,
+        root_guid: h.root_guid,
+        flags: h.flags,
+        scope_guid: h.scope_guid,
+        ..Default::default()
+    }
 }
 
 /// `rsi_register` — become a registry source backing `hives`.
@@ -64,7 +65,9 @@ fn marshal_hive(h: &rsi_hive) -> reg_src_hive_entry {
 /// `SeTcbPrivilege`. `max_sequence` is the highest sequence number this source has
 /// already persisted (the kernel resumes its global counter past it). Returns the
 /// source fd — `read(2)` RSI requests and `write(2)` responses on it — or `-1` with
-/// `errno` (`EPERM` without privilege, `EINVAL`, `ENOMEM`, `EFAULT`).
+/// `errno`, including `EPERM` without privilege, `EINVAL`, `ENOSPC`, `ENOMEM`,
+/// `EFAULT`, or any `/dev/pkm_registry` `open(2)` error.
+/// librsi rejects zero hives; the kernel enforces its configured maximum hive count.
 ///
 /// # Safety
 /// `hives` must point to `count` valid `rsi_hive`s, each `name` valid for `name_len`
@@ -75,7 +78,7 @@ pub unsafe extern "C" fn rsi_register(
     count: u32,
     max_sequence: u64,
 ) -> c_int {
-    if hives.is_null() && count != 0 {
+    if count == 0 || hives.is_null() {
         set_errno(libc::EINVAL);
         return -1;
     }
@@ -89,10 +92,12 @@ pub unsafe extern "C" fn rsi_register(
     for i in 0..count as usize {
         entries.push(marshal_hive(&*hives.add(i)));
     }
-    let mut args = reg_src_register_args::default();
-    args.hive_count = count;
-    args.max_sequence = max_sequence;
-    args.hives_ptr = entries.as_ptr() as usize as u64;
+    let mut args = reg_src_register_args {
+        hive_count: count,
+        max_sequence,
+        hives_ptr: entries.as_ptr() as usize as u64,
+        ..Default::default()
+    };
 
     let fd = libc::open(
         DEVICE.as_ptr() as *const c_char,
@@ -162,5 +167,14 @@ mod tests {
         let e = marshal_hive(&h);
         assert_eq!(e.flags, 0);
         assert_eq!(e.scope_guid, [0u8; 16]);
+    }
+
+    #[test]
+    fn register_rejects_zero_hives() {
+        use crate::error::get_errno;
+
+        let r = unsafe { rsi_register(core::ptr::null(), 0, 0) };
+        assert_eq!(r, -1);
+        assert_eq!(get_errno(), libc::EINVAL);
     }
 }

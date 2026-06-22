@@ -32,13 +32,14 @@ struct rsi_hive {
 /*
  * rsi_register - become a registry source backing @hives.
  * @hives:        array of @count hives this source serves.
- * @count:        number of hives (>= 1).
+ * @count:        number of hives (>= 1; kernel MaxHivesPerSource limit applies).
  * @max_sequence: the highest sequence number this source has already persisted
  *                (the kernel resumes its global counter past it).
  *
  * Opens /dev/pkm_registry and registers all @count hives in one call. Returns the
- * source fd — read(2) RSI requests and write(2) responses on it — or -1 with errno:
- * EPERM (no SeTcbPrivilege), EINVAL, ENOMEM, EFAULT.
+ * source fd — read(2) RSI requests and write(2) responses on it — or -1 with errno,
+ * including EPERM (no SeTcbPrivilege), EINVAL, ENOSPC, ENOMEM, EFAULT, or any
+ * /dev/pkm_registry open(2) error.
  */
 int rsi_register(const struct rsi_hive *hives, uint32_t count, uint64_t max_sequence);
 

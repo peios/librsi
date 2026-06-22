@@ -12,7 +12,7 @@ to prove, mechanically, that those headers never drift from the Rust
   in so regenerating + diffing reveals any Rust-side ABI change. **Not** part of the
   installed API — include `<rsi.h>` (or the individual `<rsi/*.h>`), not this.
 - **`../cbindgen.toml`** — the generator config.
-- **`../tools/verify-abi.sh`** — the verification gate (5 checks).
+- **`../tools/verify-abi.sh`** — the verification gate (6 checks).
 
 ## Regenerating
 
@@ -34,10 +34,12 @@ nix-shell -p rust-cbindgen --run ./tools/verify-abi.sh
 
 It (1) regenerates + diffs the snapshot (Rust-drift gate), (2) compiles the snapshot
 standalone C/C++, (3) compares every function signature via `gcc -aux-info`, (4)
-compares every struct's `sizeof`+`_Alignof`, (5) compares data symbols. Steps 3–5
-ignore ABI-irrelevant spellings (param/field names, `struct`/`enum` tags,
-`ptrdiff_t`≡`ssize_t`, `uintptr_t`≡`size_t`, enum≡int). See libpeios's `abi/README.md`
-for the rationale and the residual same-size-reorder caveat.
+compares every struct name, public field name, `sizeof`+`_Alignof`, and every public
+field's offset and size, (5) compares data symbols, and (6) builds the release
+`librsi.so`, checks it with `ldd -r` for unresolved dynamic symbols, and verifies the
+dynamic export set exactly matches the header-declared `rsi_*` ABI. Steps 3–5 ignore
+ABI-irrelevant spellings (param names, `struct`/`enum` tags, `ptrdiff_t`≡`ssize_t`,
+`uintptr_t`≡`size_t`, enum≡int).
 
 ## Workflow when the ABI changes
 

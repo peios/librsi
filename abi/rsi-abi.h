@@ -180,11 +180,9 @@ struct rsi_blanket_entry {
 extern "C" {
 #endif // __cplusplus
 
-extern void abort(void);
-
 int rsi_parse_request(const void *frame, size_t len, struct rsi_request *out);
 
-ptrdiff_t rsi_read_request(int fd, void *buf, size_t cap);
+ssize_t rsi_read_request(int fd, void *buf, size_t cap);
 
 int rsi_register(const struct rsi_hive *hives, uint32_t count, uint64_t max_sequence);
 
@@ -226,6 +224,11 @@ int rsi_request_set_value(const struct rsi_request *req, struct rsi_set_value *o
 
 int rsi_request_write_key(const struct rsi_request *req, struct rsi_write_key *out);
 
+int rsi_respond_delete_layer(int fd,
+                             const struct rsi_request *req,
+                             const uint8_t *orphaned_guids,
+                             uint32_t orphaned_count);
+
 int rsi_respond_enum_children(int fd,
                               const struct rsi_request *req,
                               const struct rsi_child_entry *children,
@@ -260,7 +263,7 @@ int rsi_respond_read_key(int fd,
 
 int rsi_respond_status(int fd, const struct rsi_request *req, uint32_t status);
 
-ptrdiff_t rsi_write_response(int fd, const void *frame, size_t len);
+ssize_t rsi_write_response(int fd, const void *frame, size_t len);
 
 #ifdef __cplusplus
 }  // extern "C"

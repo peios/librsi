@@ -26,7 +26,12 @@ use lcs_core::rsi::{
     parse_rsi_write_key_request_payload, RsiLengthPrefixedField,
 };
 
-use peios_uapi::RSI_REQUEST_HEADER_SIZE;
+use peios_uapi::{
+    RSI_ABORT_TRANSACTION, RSI_BEGIN_TRANSACTION, RSI_COMMIT_TRANSACTION, RSI_CREATE_ENTRY,
+    RSI_CREATE_KEY, RSI_DELETE_ENTRY, RSI_DELETE_LAYER, RSI_DELETE_VALUE_ENTRY, RSI_DROP_KEY,
+    RSI_ENUM_CHILDREN, RSI_FLUSH, RSI_HIDE_ENTRY, RSI_LOOKUP, RSI_QUERY_VALUES, RSI_READ_KEY,
+    RSI_REQUEST_HEADER_SIZE, RSI_SET_BLANKET_TOMBSTONE, RSI_SET_VALUE, RSI_WRITE_KEY,
+};
 
 use crate::error::set_errno;
 
@@ -34,21 +39,45 @@ use crate::error::set_errno;
 // Shared plumbing
 // ----------------------------------------------------------------------------
 
-/// Borrow a request's payload bytes (the frame past the 22-byte header). `None` only
-/// if `req` itself is NULL.
+/// Borrow a request's payload bytes (the frame past the 22-byte header), after
+/// verifying the caller used the decoder that matches the parsed op code.
 ///
 /// # Safety
-/// `req` must be NULL or a valid `rsi_request` whose `payload` is valid for
-/// `payload_len` bytes.
-unsafe fn req_payload<'a>(req: *const rsi_request) -> Option<&'a [u8]> {
-    let req = req.as_ref()?;
-    if req.payload.is_null() {
-        return Some(&[]);
+/// `req` must be NULL or a valid `rsi_request`; when `payload_len != 0`, `payload`
+/// must be valid for `payload_len` bytes.
+unsafe fn req_payload_for<'a>(
+    req: *const rsi_request,
+    expected_op: u32,
+) -> Result<&'a [u8], c_int> {
+    let Some(req) = req.as_ref() else {
+        return Err(libc::EINVAL);
+    };
+    if req.op_code != expected_op as u16 {
+        return Err(libc::EINVAL);
     }
-    Some(core::slice::from_raw_parts(
+    if req.payload.is_null() {
+        if req.payload_len == 0 {
+            return Ok(&[]);
+        }
+        return Err(libc::EINVAL);
+    }
+    Ok(core::slice::from_raw_parts(
         req.payload as *const u8,
         req.payload_len as usize,
     ))
+}
+
+macro_rules! req_payload_and_out {
+    ($req:expr, $out:expr, $expected_op:expr) => {{
+        let p = match req_payload_for($req, $expected_op) {
+            Ok(p) => p,
+            Err(e) => return fail_errno(e),
+        };
+        let Some(out) = $out.as_mut() else {
+            return einval();
+        };
+        (p, out)
+    }};
 }
 
 /// A length-prefixed field as a C `(ptr, len)` borrowing the frame buffer.
@@ -58,13 +87,16 @@ fn lpf(f: &RsiLengthPrefixedField) -> (*const c_void, u32) {
 
 /// Set `errno = EBADMSG` (a malformed frame) and return the `-1` sentinel.
 fn bad_msg() -> c_int {
-    set_errno(libc::EBADMSG);
-    -1
+    fail_errno(libc::EBADMSG)
 }
 
-/// `EINVAL` sentinel for a NULL `req`/`out`.
+/// `EINVAL` sentinel for a NULL arg, forged request, or op/helper mismatch.
 fn einval() -> c_int {
-    set_errno(libc::EINVAL);
+    fail_errno(libc::EINVAL)
+}
+
+fn fail_errno(e: c_int) -> c_int {
+    set_errno(e);
     -1
 }
 
@@ -99,7 +131,11 @@ pub struct rsi_request {
 /// # Safety
 /// `buf` must be valid for `cap` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn rsi_read_request(fd: c_int, buf: *mut c_void, cap: usize) -> isize {
+pub unsafe extern "C" fn rsi_read_request(
+    fd: c_int,
+    buf: *mut c_void,
+    cap: usize,
+) -> libc::ssize_t {
     libc::read(fd, buf, cap)
 }
 
@@ -157,10 +193,11 @@ pub struct rsi_lookup {
 /// # Safety
 /// `req` from [`rsi_parse_request`]; `out` valid for writing.
 #[no_mangle]
-pub unsafe extern "C" fn rsi_request_lookup(req: *const rsi_request, out: *mut rsi_lookup) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+pub unsafe extern "C" fn rsi_request_lookup(
+    req: *const rsi_request,
+    out: *mut rsi_lookup,
+) -> c_int {
+    let (p, out) = req_payload_and_out!(req, out, RSI_LOOKUP);
     match parse_rsi_lookup_request_payload(p) {
         Ok(v) => {
             out.parent_guid = v.parent_guid;
@@ -190,9 +227,7 @@ pub unsafe extern "C" fn rsi_request_create_entry(
     req: *const rsi_request,
     out: *mut rsi_create_entry,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_CREATE_ENTRY);
     match parse_rsi_create_entry_request_payload(p) {
         Ok(v) => {
             out.parent_guid = v.parent_guid;
@@ -224,9 +259,7 @@ pub unsafe extern "C" fn rsi_request_hide_entry(
     req: *const rsi_request,
     out: *mut rsi_hide_entry,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_HIDE_ENTRY);
     match parse_rsi_hide_entry_request_payload(p) {
         Ok(v) => {
             out.parent_guid = v.parent_guid;
@@ -256,9 +289,7 @@ pub unsafe extern "C" fn rsi_request_delete_entry(
     req: *const rsi_request,
     out: *mut rsi_delete_entry,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_DELETE_ENTRY);
     match parse_rsi_delete_entry_request_payload(p) {
         Ok(v) => {
             out.parent_guid = v.parent_guid;
@@ -283,9 +314,7 @@ pub unsafe extern "C" fn rsi_request_enum_children(
     req: *const rsi_request,
     out: *mut rsi_enum_children,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_ENUM_CHILDREN);
     match parse_rsi_enum_children_request_payload(p) {
         Ok(v) => {
             out.parent_guid = v.parent_guid;
@@ -317,9 +346,7 @@ pub unsafe extern "C" fn rsi_request_create_key(
     req: *const rsi_request,
     out: *mut rsi_create_key,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_CREATE_KEY);
     match parse_rsi_create_key_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -349,9 +376,7 @@ pub unsafe extern "C" fn rsi_request_read_key(
     req: *const rsi_request,
     out: *mut rsi_key_guid,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_READ_KEY);
     match parse_rsi_read_key_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -370,9 +395,7 @@ pub unsafe extern "C" fn rsi_request_drop_key(
     req: *const rsi_request,
     out: *mut rsi_key_guid,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_DROP_KEY);
     match parse_rsi_drop_key_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -403,9 +426,7 @@ pub unsafe extern "C" fn rsi_request_write_key(
     req: *const rsi_request,
     out: *mut rsi_write_key,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_WRITE_KEY);
     match parse_rsi_write_key_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -441,9 +462,7 @@ pub unsafe extern "C" fn rsi_request_query_values(
     req: *const rsi_request,
     out: *mut rsi_query_values,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_QUERY_VALUES);
     match parse_rsi_query_values_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -478,9 +497,7 @@ pub unsafe extern "C" fn rsi_request_set_value(
     req: *const rsi_request,
     out: *mut rsi_set_value,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_SET_VALUE);
     match parse_rsi_set_value_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -513,9 +530,7 @@ pub unsafe extern "C" fn rsi_request_delete_value_entry(
     req: *const rsi_request,
     out: *mut rsi_delete_value_entry,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_DELETE_VALUE_ENTRY);
     match parse_rsi_delete_value_entry_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -545,9 +560,7 @@ pub unsafe extern "C" fn rsi_request_set_blanket_tombstone(
     req: *const rsi_request,
     out: *mut rsi_set_blanket_tombstone,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_SET_BLANKET_TOMBSTONE);
     match parse_rsi_set_blanket_tombstone_request_payload(p) {
         Ok(v) => {
             out.guid = v.guid;
@@ -575,9 +588,7 @@ pub unsafe extern "C" fn rsi_request_begin_transaction(
     req: *const rsi_request,
     out: *mut rsi_begin_transaction,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_BEGIN_TRANSACTION);
     match parse_rsi_begin_transaction_request_payload(p) {
         Ok(v) => {
             out.transaction_id = v.transaction_id;
@@ -603,9 +614,7 @@ pub unsafe extern "C" fn rsi_request_commit_transaction(
     req: *const rsi_request,
     out: *mut rsi_transaction,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_COMMIT_TRANSACTION);
     match parse_rsi_commit_transaction_request_payload(p) {
         Ok(v) => {
             out.transaction_id = v.transaction_id;
@@ -624,9 +633,7 @@ pub unsafe extern "C" fn rsi_request_abort_transaction(
     req: *const rsi_request,
     out: *mut rsi_transaction,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_ABORT_TRANSACTION);
     match parse_rsi_abort_transaction_request_payload(p) {
         Ok(v) => {
             out.transaction_id = v.transaction_id;
@@ -652,9 +659,7 @@ pub unsafe extern "C" fn rsi_request_delete_layer(
     req: *const rsi_request,
     out: *mut rsi_name,
 ) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_DELETE_LAYER);
     match parse_rsi_delete_layer_request_payload(p) {
         Ok(v) => {
             (out.name, out.name_len) = lpf(&v.layer_name);
@@ -670,9 +675,7 @@ pub unsafe extern "C" fn rsi_request_delete_layer(
 /// `req` from [`rsi_parse_request`]; `out` valid for writing.
 #[no_mangle]
 pub unsafe extern "C" fn rsi_request_flush(req: *const rsi_request, out: *mut rsi_name) -> c_int {
-    let (Some(p), Some(out)) = (req_payload(req), out.as_mut()) else {
-        return einval();
-    };
+    let (p, out) = req_payload_and_out!(req, out, RSI_FLUSH);
     match parse_rsi_flush_request_payload(p) {
         Ok(v) => {
             (out.name, out.name_len) = lpf(&v.hive_name);
@@ -686,7 +689,14 @@ pub unsafe extern "C" fn rsi_request_flush(req: *const rsi_request, out: *mut rs
 mod tests {
     use super::*;
     use lcs_core::rsi::{
-        write_rsi_begin_transaction_request_frame, write_rsi_lookup_request_frame,
+        write_rsi_abort_transaction_request_frame, write_rsi_begin_transaction_request_frame,
+        write_rsi_commit_transaction_request_frame, write_rsi_create_entry_request_frame,
+        write_rsi_create_key_request_frame, write_rsi_delete_entry_request_frame,
+        write_rsi_delete_layer_request_frame, write_rsi_delete_value_entry_request_frame,
+        write_rsi_drop_key_request_frame, write_rsi_enum_children_request_frame,
+        write_rsi_flush_request_frame, write_rsi_hide_entry_request_frame,
+        write_rsi_lookup_request_frame, write_rsi_query_values_request_frame,
+        write_rsi_read_key_request_frame, write_rsi_set_blanket_tombstone_request_frame,
         write_rsi_set_value_request_frame, write_rsi_write_key_request_frame, RsiTransactionMode,
         RSI_WRITE_KEY_FIELD_LAST_WRITE_TIME, RSI_WRITE_KEY_FIELD_SD,
     };
@@ -747,7 +757,10 @@ mod tests {
             assert_eq!(field_bytes(out.value_name, out.value_name_len), b"Color");
             assert_eq!(field_bytes(out.layer_name, out.layer_name_len), b"base");
             assert_eq!(out.value_type, 3);
-            assert_eq!(field_bytes(out.data, out.data_len), &[0xDE, 0xAD, 0xBE, 0xEF]);
+            assert_eq!(
+                field_bytes(out.data, out.data_len),
+                &[0xDE, 0xAD, 0xBE, 0xEF]
+            );
             assert_eq!(out.sequence, 42);
             assert_eq!(out.expected_sequence, 100);
         }
@@ -755,19 +768,18 @@ mod tests {
 
     #[test]
     fn write_key_options_roundtrip() {
-        // SD present, last-write-time absent.
         let mut buf = [0u8; 256];
-        let built = write_rsi_write_key_request_frame(
-            &mut buf,
-            1,
-            0,
-            [0x02; 16],
-            Some(&[0x11, 0x22, 0x33]),
-            None,
-        )
-        .unwrap();
-        let frame = &buf[..built.len];
         unsafe {
+            let built = write_rsi_write_key_request_frame(
+                &mut buf,
+                1,
+                0,
+                [0x02; 16],
+                Some(&[0x11, 0x22, 0x33]),
+                None,
+            )
+            .unwrap();
+            let frame = &buf[..built.len];
             let req = parse(frame);
             let mut out = core::mem::zeroed::<rsi_write_key>();
             assert_eq!(rsi_request_write_key(&req, &mut out), 0);
@@ -775,16 +787,58 @@ mod tests {
             assert_eq!(field_bytes(out.sd, out.sd_len), &[0x11, 0x22, 0x33]);
             assert!(out.last_write_time == 0);
             assert_eq!(out.field_mask & RSI_WRITE_KEY_FIELD_LAST_WRITE_TIME, 0);
+
+            let built = write_rsi_write_key_request_frame(
+                &mut buf,
+                2,
+                0,
+                [0x03; 16],
+                None,
+                Some(0x1122_3344_5566_7788),
+            )
+            .unwrap();
+            let frame = &buf[..built.len];
+            let req = parse(frame);
+            let mut out = core::mem::zeroed::<rsi_write_key>();
+            assert_eq!(rsi_request_write_key(&req, &mut out), 0);
+            assert_eq!(out.field_mask, RSI_WRITE_KEY_FIELD_LAST_WRITE_TIME);
+            assert!(out.sd.is_null());
+            assert_eq!(out.sd_len, 0);
+            assert_eq!(out.last_write_time, 0x1122_3344_5566_7788);
+
+            let built = write_rsi_write_key_request_frame(
+                &mut buf,
+                3,
+                0,
+                [0x04; 16],
+                Some(&[0x44, 0x55]),
+                Some(0x8877_6655_4433_2211),
+            )
+            .unwrap();
+            let frame = &buf[..built.len];
+            let req = parse(frame);
+            let mut out = core::mem::zeroed::<rsi_write_key>();
+            assert_eq!(rsi_request_write_key(&req, &mut out), 0);
+            assert_eq!(
+                out.field_mask,
+                RSI_WRITE_KEY_FIELD_SD | RSI_WRITE_KEY_FIELD_LAST_WRITE_TIME
+            );
+            assert_eq!(field_bytes(out.sd, out.sd_len), &[0x44, 0x55]);
+            assert_eq!(out.last_write_time, 0x8877_6655_4433_2211);
         }
     }
 
     #[test]
     fn begin_transaction_roundtrips() {
         let mut buf = [0u8; 64];
-        // mode 1 = ReadOnly.
-        let built =
-            write_rsi_begin_transaction_request_frame(&mut buf, 5, 0, 99, RsiTransactionMode::ReadOnly)
-                .unwrap();
+        let built = write_rsi_begin_transaction_request_frame(
+            &mut buf,
+            5,
+            0,
+            99,
+            RsiTransactionMode::ReadOnly,
+        )
+        .unwrap();
         let frame = &buf[..built.len];
         unsafe {
             let req = parse(frame);
@@ -792,6 +846,260 @@ mod tests {
             assert_eq!(rsi_request_begin_transaction(&req, &mut out), 0);
             assert_eq!(out.transaction_id, 99);
             assert_eq!(out.mode, 1);
+        }
+
+        let built = write_rsi_begin_transaction_request_frame(
+            &mut buf,
+            6,
+            0,
+            100,
+            RsiTransactionMode::ReadWrite,
+        )
+        .unwrap();
+        let frame = &buf[..built.len];
+        unsafe {
+            let req = parse(frame);
+            let mut out = core::mem::zeroed::<rsi_begin_transaction>();
+            assert_eq!(rsi_request_begin_transaction(&req, &mut out), 0);
+            assert_eq!(out.transaction_id, 100);
+            assert_eq!(out.mode, 0);
+        }
+    }
+
+    #[test]
+    fn entry_request_decoders_roundtrip() {
+        unsafe {
+            let mut buf = [0u8; 256];
+
+            let built = write_rsi_create_entry_request_frame(
+                &mut buf, 10, 4, [0x10; 16], b"Child", b"base", [0x11; 16], 55,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut create_entry = core::mem::zeroed::<rsi_create_entry>();
+            assert_eq!(rsi_request_create_entry(&req, &mut create_entry), 0);
+            assert_eq!(create_entry.parent_guid, [0x10; 16]);
+            assert_eq!(create_entry.child_guid, [0x11; 16]);
+            assert_eq!(
+                field_bytes(create_entry.child_name, create_entry.child_name_len),
+                b"Child"
+            );
+            assert_eq!(
+                field_bytes(create_entry.layer_name, create_entry.layer_name_len),
+                b"base"
+            );
+            assert_eq!(create_entry.sequence, 55);
+
+            let built = write_rsi_hide_entry_request_frame(
+                &mut buf, 11, 4, [0x20; 16], b"Hidden", b"mask", 56,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut hide_entry = core::mem::zeroed::<rsi_hide_entry>();
+            assert_eq!(rsi_request_hide_entry(&req, &mut hide_entry), 0);
+            assert_eq!(hide_entry.parent_guid, [0x20; 16]);
+            assert_eq!(
+                field_bytes(hide_entry.child_name, hide_entry.child_name_len),
+                b"Hidden"
+            );
+            assert_eq!(
+                field_bytes(hide_entry.layer_name, hide_entry.layer_name_len),
+                b"mask"
+            );
+            assert_eq!(hide_entry.sequence, 56);
+
+            let built = write_rsi_delete_entry_request_frame(
+                &mut buf, 12, 4, [0x30; 16], b"Dead", b"overlay",
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut delete_entry = core::mem::zeroed::<rsi_delete_entry>();
+            assert_eq!(rsi_request_delete_entry(&req, &mut delete_entry), 0);
+            assert_eq!(delete_entry.parent_guid, [0x30; 16]);
+            assert_eq!(
+                field_bytes(delete_entry.child_name, delete_entry.child_name_len),
+                b"Dead"
+            );
+            assert_eq!(
+                field_bytes(delete_entry.layer_name, delete_entry.layer_name_len),
+                b"overlay"
+            );
+
+            let built = write_rsi_enum_children_request_frame(&mut buf, 13, 4, [0x40; 16]).unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut enum_children = core::mem::zeroed::<rsi_enum_children>();
+            assert_eq!(rsi_request_enum_children(&req, &mut enum_children), 0);
+            assert_eq!(enum_children.parent_guid, [0x40; 16]);
+        }
+    }
+
+    #[test]
+    fn key_request_decoders_roundtrip() {
+        unsafe {
+            let mut buf = [0u8; 256];
+
+            let built = write_rsi_create_key_request_frame(
+                &mut buf,
+                14,
+                4,
+                [0x50; 16],
+                b"Key",
+                [0x51; 16],
+                &[0xAA, 0xBB],
+                true,
+                false,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut create_key = core::mem::zeroed::<rsi_create_key>();
+            assert_eq!(rsi_request_create_key(&req, &mut create_key), 0);
+            assert_eq!(create_key.guid, [0x50; 16]);
+            assert_eq!(create_key.parent_guid, [0x51; 16]);
+            assert_eq!(field_bytes(create_key.name, create_key.name_len), b"Key");
+            assert_eq!(field_bytes(create_key.sd, create_key.sd_len), &[0xAA, 0xBB]);
+            assert_eq!(create_key.volatile_key, 1);
+            assert_eq!(create_key.symlink, 0);
+
+            let built = write_rsi_create_key_request_frame(
+                &mut buf,
+                24,
+                4,
+                [0x52; 16],
+                b"Link",
+                [0x53; 16],
+                &[0xCC],
+                false,
+                true,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut create_key = core::mem::zeroed::<rsi_create_key>();
+            assert_eq!(rsi_request_create_key(&req, &mut create_key), 0);
+            assert_eq!(field_bytes(create_key.name, create_key.name_len), b"Link");
+            assert_eq!(field_bytes(create_key.sd, create_key.sd_len), &[0xCC]);
+            assert_eq!(create_key.volatile_key, 0);
+            assert_eq!(create_key.symlink, 1);
+
+            let built = write_rsi_read_key_request_frame(&mut buf, 15, 4, [0x60; 16]).unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut key_guid = core::mem::zeroed::<rsi_key_guid>();
+            assert_eq!(rsi_request_read_key(&req, &mut key_guid), 0);
+            assert_eq!(key_guid.guid, [0x60; 16]);
+
+            let built = write_rsi_drop_key_request_frame(&mut buf, 16, 4, [0x61; 16]).unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut key_guid = core::mem::zeroed::<rsi_key_guid>();
+            assert_eq!(rsi_request_drop_key(&req, &mut key_guid), 0);
+            assert_eq!(key_guid.guid, [0x61; 16]);
+        }
+    }
+
+    #[test]
+    fn value_request_decoders_roundtrip() {
+        unsafe {
+            let mut buf = [0u8; 256];
+
+            let built =
+                write_rsi_query_values_request_frame(&mut buf, 17, 4, [0x70; 16], b"Value", false)
+                    .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut query_values = core::mem::zeroed::<rsi_query_values>();
+            assert_eq!(rsi_request_query_values(&req, &mut query_values), 0);
+            assert_eq!(query_values.guid, [0x70; 16]);
+            assert_eq!(
+                field_bytes(query_values.value_name, query_values.value_name_len),
+                b"Value"
+            );
+            assert_eq!(query_values.query_all, 0);
+
+            let built =
+                write_rsi_query_values_request_frame(&mut buf, 25, 4, [0x71; 16], b"", true)
+                    .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut query_values = core::mem::zeroed::<rsi_query_values>();
+            assert_eq!(rsi_request_query_values(&req, &mut query_values), 0);
+            assert_eq!(query_values.guid, [0x71; 16]);
+            assert_eq!(query_values.value_name_len, 0);
+            assert_eq!(query_values.query_all, 1);
+
+            let built = write_rsi_delete_value_entry_request_frame(
+                &mut buf, 18, 4, [0x80; 16], b"Value", b"base",
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut delete_value = core::mem::zeroed::<rsi_delete_value_entry>();
+            assert_eq!(rsi_request_delete_value_entry(&req, &mut delete_value), 0);
+            assert_eq!(delete_value.guid, [0x80; 16]);
+            assert_eq!(
+                field_bytes(delete_value.value_name, delete_value.value_name_len),
+                b"Value"
+            );
+            assert_eq!(
+                field_bytes(delete_value.layer_name, delete_value.layer_name_len),
+                b"base"
+            );
+
+            let built = write_rsi_set_blanket_tombstone_request_frame(
+                &mut buf, 19, 4, [0x90; 16], b"mask", true, 57,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut blanket = core::mem::zeroed::<rsi_set_blanket_tombstone>();
+            assert_eq!(rsi_request_set_blanket_tombstone(&req, &mut blanket), 0);
+            assert_eq!(blanket.guid, [0x90; 16]);
+            assert_eq!(
+                field_bytes(blanket.layer_name, blanket.layer_name_len),
+                b"mask"
+            );
+            assert_eq!(blanket.set, 1);
+            assert_eq!(blanket.sequence, 57);
+
+            let built = write_rsi_set_blanket_tombstone_request_frame(
+                &mut buf, 26, 4, [0x91; 16], b"mask", false, 58,
+            )
+            .unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut blanket = core::mem::zeroed::<rsi_set_blanket_tombstone>();
+            assert_eq!(rsi_request_set_blanket_tombstone(&req, &mut blanket), 0);
+            assert_eq!(blanket.guid, [0x91; 16]);
+            assert_eq!(
+                field_bytes(blanket.layer_name, blanket.layer_name_len),
+                b"mask"
+            );
+            assert_eq!(blanket.set, 0);
+            assert_eq!(blanket.sequence, 58);
+        }
+    }
+
+    #[test]
+    fn transaction_and_name_request_decoders_roundtrip() {
+        unsafe {
+            let mut buf = [0u8; 256];
+
+            let built =
+                write_rsi_commit_transaction_request_frame(&mut buf, 20, 4, 0x1234).unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut transaction = core::mem::zeroed::<rsi_transaction>();
+            assert_eq!(rsi_request_commit_transaction(&req, &mut transaction), 0);
+            assert_eq!(transaction.transaction_id, 0x1234);
+
+            let built = write_rsi_abort_transaction_request_frame(&mut buf, 21, 4, 0x5678).unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut transaction = core::mem::zeroed::<rsi_transaction>();
+            assert_eq!(rsi_request_abort_transaction(&req, &mut transaction), 0);
+            assert_eq!(transaction.transaction_id, 0x5678);
+
+            let built = write_rsi_delete_layer_request_frame(&mut buf, 22, 4, b"overlay").unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut name = core::mem::zeroed::<rsi_name>();
+            assert_eq!(rsi_request_delete_layer(&req, &mut name), 0);
+            assert_eq!(field_bytes(name.name, name.name_len), b"overlay");
+
+            let built = write_rsi_flush_request_frame(&mut buf, 23, 4, b"Machine").unwrap();
+            let req = parse(&buf[..built.len]);
+            let mut name = core::mem::zeroed::<rsi_name>();
+            assert_eq!(rsi_request_flush(&req, &mut name), 0);
+            assert_eq!(field_bytes(name.name, name.name_len), b"Machine");
         }
     }
 
@@ -804,5 +1112,21 @@ mod tests {
             unsafe { rsi_parse_request(frame.as_ptr() as *const c_void, frame.len(), &mut req) };
         assert_eq!(r, -1);
         assert_eq!(get_errno(), libc::EBADMSG);
+    }
+
+    #[test]
+    fn mismatched_decoder_is_einval() {
+        use crate::error::get_errno;
+
+        let mut buf = [0u8; 128];
+        let built =
+            write_rsi_lookup_request_frame(&mut buf, 7, 3, [0xAB; 16], b"Software").unwrap();
+        let frame = &buf[..built.len];
+        unsafe {
+            let req = parse(frame);
+            let mut out = core::mem::zeroed::<rsi_key_guid>();
+            assert_eq!(rsi_request_read_key(&req, &mut out), -1);
+            assert_eq!(get_errno(), libc::EINVAL);
+        }
     }
 }

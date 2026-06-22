@@ -54,3 +54,18 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     // SAFETY: `abort` never returns and performs no Rust unwinding.
     unsafe { abort() }
 }
+
+// Satisfy EH personality references that can remain in a no-std cdylib even with
+// `panic = "abort"`. Nothing in librsi may unwind; if an unwinder ever reaches this
+// symbol, report a fatal personality error. Define it as hidden assembler so it
+// resolves local relocations without becoming part of the public dynamic ABI.
+#[cfg(all(not(test), target_arch = "x86_64"))]
+core::arch::global_asm!(
+    ".hidden rust_eh_personality",
+    ".globl rust_eh_personality",
+    ".type rust_eh_personality, @function",
+    "rust_eh_personality:",
+    "mov eax, 3",
+    "ret",
+    ".size rust_eh_personality, . - rust_eh_personality",
+);

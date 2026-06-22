@@ -54,8 +54,8 @@ int rsi_parse_request(const void *frame, size_t len, struct rsi_request *out);
 /*
  * Each takes the parsed @req and fills a flat struct: GUIDs by value, names/data as
  * borrowed (ptr, len) pairs into the frame. Returns 0, or -1 with errno (EINVAL on
- * NULL args, EBADMSG on a malformed payload). Call only the decoder matching
- * req->op_code.
+ * NULL args or a decoder that does not match req->op_code, EBADMSG on a malformed
+ * payload).
  */
 
 /* LOOKUP: is @child_name visible under @parent_guid? */

@@ -14,17 +14,17 @@ Interface) framed protocol on its source fd.
 - **Language / shape:** Rust, `#![cfg_attr(not(test), no_std)]` + `alloc`,
   `panic = "abort"`, cdylib+staticlib — same shape as libpeios.
 - **Dependencies:** `peios-cabi` (git — the shared C-ABI substrate: allocator, errno,
-  syscall/ioctl wrappers, getxattr/builder helpers), `lcs-core` (path; the pure-`core`
-  RSI request parsers + status vocabulary the kernel itself uses → wire-compatible),
-  `peios-uapi` (path; RSI constants + `#[repr(C)]` structs), `libc`. pkm crates stay
-  path deps (pkm has unpushed changes); peios-cabi is a bare git dep tracking `main`.
-- **lcs-core no_std fix (pkm edit — behavior-neutral):** lcs-core was
+  syscall/ioctl wrappers, getxattr/builder helpers), `lcs-core` (git, from pkm; the
+  pure-`core` RSI request parsers + status vocabulary the kernel itself uses →
+  wire-compatible), `peios-uapi` (git, from pkm; RSI constants + `#[repr(C)]` structs),
+  `libc`. Git dependencies are pinned by explicit `rev` values in `Cargo.toml`;
+  `Cargo.lock` remains local/untracked by project convention.
+- **lcs-core no_std fix (pkm dependency requirement):** lcs-core was
   `#![cfg_attr(feature = "kernel", no_std)]`, i.e. std without the kernel feature.
   It is pure `core` (zero `std`, zero `alloc`), so the gate was mis-scoped; changed to
   `#![cfg_attr(not(test), no_std)]` so userspace (librsi) gets a no_std lcs-core. Proven
   neutral: kernel builds no_std either way, tests build std either way, the `kernel`
-  feature still gates the kacs-core/kernel wiring. **This change lives in pkm's
-  uncommitted working tree — include it when pkm is next committed.**
+  feature still gates the kacs-core/kernel wiring.
 - **Error model:** same as libpeios — `int` = fd/0/`-1`+errno; the kernel's errno
   passes straight through (the source-device `open`/`ioctl` and the `read`/`write`
   framing). LcsError→errno mapping (from lcs-core parsers) lands with the request slice.
@@ -55,8 +55,9 @@ Interface) framed protocol on its source fd.
   count, max_sequence)` opens `/dev/pkm_registry` (`O_RDWR|O_CLOEXEC`), marshals the
   caller's `struct rsi_hive` array into `reg_src_hive_entry`s (pure `marshal_hive`,
   unit-tested), `ioctl(REG_SRC_REGISTER)`, preserves the errno across the cleanup
-  close. `<rsi/source.h>` + the `<rsi.h>` umbrella. cbindgen verify harness
-  (`cbindgen.toml`, `abi/rsi-abi.h`, `tools/verify-abi.sh`) — all 5 checks green.
+  close. librsi rejects zero hives; the kernel enforces its configured
+  `MaxHivesPerSource`. `<rsi/source.h>` + the `<rsi.h>` umbrella. cbindgen verify
+  harness (`cbindgen.toml`, `abi/rsi-abi.h`, `tools/verify-abi.sh`) — all 6 checks green.
   Crate builds clean no_std, exports `rsi_register`, headers compile C/C++.
 - **Slice 2 — request transport + decode — DONE.** `src/request.rs`,
   `<rsi/request.h>`: `rsi_read_request` (read(2) wrapper), `rsi_parse_request`
@@ -67,19 +68,22 @@ Interface) framed protocol on its source fd.
   lcs-core's `write_rsi_*_request_frame` then decoding.
 - **Slice 3 — response building — DONE.** `src/response.rs`, `<rsi/response.h>`:
   `rsi_write_response` (write(2) wrapper), `rsi_respond_status` (18-byte header+status,
-  covers every mutating op + all error replies), and the four read-op payload
-  responses `rsi_respond_{lookup,enum_children,read_key,query_values}` — array-based
-  (caller passes flat entry/metadata/value/blanket arrays; librsi heap-encodes the
-  frame via a fallible sticky-OOM `FrameWriter`, writes, frees). lcs-core has no
-  response builders, so these are hand-encoded from the uapi offsets (LE; length-
-  prefixed fields; `[count][entries]` blocks; per-path-entry `target_type` tag).
-  Round-trip-tested by encoding a response then parsing it with lcs-core's own
-  `parse_rsi_*_success_response_payload` (proves kernel-acceptability).
+  covers status-only success ops + all non-OK replies), and the payload success
+  responses `rsi_respond_{lookup,enum_children,read_key,delete_layer,query_values}` —
+  array-based (caller passes flat entry/metadata/GUID/value/blanket arrays; librsi
+  heap-encodes the frame via a fallible sticky-OOM `FrameWriter`, writes, frees).
+  lcs-core has no response builders, so these are hand-encoded from the uapi offsets
+  (LE; length-prefixed fields; `[count][entries]` blocks; per-path-entry `target_type`
+  tag). librsi rejects invalid target tags, hidden targets with nonzero GUIDs, invalid
+  booleans, incomplete path metadata, and nil/duplicate delete-layer orphan GUIDs.
+  Round-trip-tested by writing responses via the public helpers, parsing them with
+  lcs-core's `parse_rsi_*_success_response_payload`, and running applicable semantic
+  validators.
 
-**librsi status:** all three slices done — **27 `rsi_*` symbols**, 12 tests, clean
-no_std build, all 5 ABI checks green, `<rsi/{source,request,response}.h>` + umbrella
-compile C/C++. The full source-serve surface (register → read → decode → handle →
-respond) is implemented.
+**librsi status:** all three slices done — **28 `rsi_*` symbols**, clean no_std
+build, the local test suite passes, all 6 ABI checks green,
+`<rsi/{source,request,response}.h>` + umbrella compile C/C++. The full source-serve
+surface (register → read → decode → handle → respond) is implemented.
 
 ## Next
 
@@ -89,5 +93,3 @@ respond) is implemented.
   through lcs-core's own builders/parsers).
 - **Repo:** create `peios/librsi/` on GitHub + push (public, like the siblings) — held
   off per the user's instruction; do when ready.
-- **lcs-core no_std flip** still lives in pkm's uncommitted working tree (see Locked
-  decisions) — commit it with pkm.

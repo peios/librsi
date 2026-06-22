@@ -10,7 +10,8 @@
  * a tighter surface.
  *
  *   Source lifecycle: <rsi/source.h>.
- *   (Request decoding and response building headers join here as they land.)
+ *   Request decoding: <rsi/request.h>.
+ *   Response building: <rsi/response.h>.
  */
 #ifndef RSI_H
 #define RSI_H

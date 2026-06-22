@@ -4,13 +4,23 @@
  *
  * After handling a request, reply on the source fd with a framed response: a 14-byte
  * header (request id echoed, op-code OR'd with RSI_RESPONSE_BIT) + a 4-byte RSI_*
- * status, then an op-specific payload for the read ops on success.
+ * status, then an op-specific payload for payload-bearing successes.
  *
  * Most ops are status-only (rsi_respond_status), and any op reports a non-OK status
- * that way. The four read ops carry a payload on success — pass the result as flat
- * arrays and librsi heap-encodes the frame. Multi-byte integers are little-endian;
+ * that way. LOOKUP, ENUM_CHILDREN, READ_KEY, DELETE_LAYER, and QUERY_VALUES carry a
+ * payload on success — pass the result as flat arrays and librsi heap-encodes the frame.
+ * Multi-byte integers are little-endian;
  * names/data are length-prefixed. Status / target-type constants (RSI_OK,
- * RSI_PATH_TARGET_GUID, …) come from <pkm/lcs.h>.
+ * RSI_PATH_TARGET_GUID, …) come from <pkm/lcs.h>. For every (ptr, len) field, ptr
+ * may be NULL only when len is zero. Boolean fields must be 0 or 1; hidden path
+ * targets must carry an all-zero GUID. LOOKUP/ENUM_CHILDREN metadata must exactly
+ * cover GUID path targets; DELETE_LAYER orphan GUIDs must be nonzero and unique.
+ *
+ * The rsi_respond_* helpers return 0, or -1 with errno. The pointer/count and
+ * (ptr, len) rules above are caller-contract EINVAL cases; per-helper notes below
+ * list op-specific additions. Helpers can also fail with ENOMEM during validation
+ * or frame allocation, EOVERFLOW if validation arithmetic or the assembled frame is
+ * too large, EIO on a short write, or the raw write(2) errno.
  */
 #ifndef RSI_RESPONSE_H
 #define RSI_RESPONSE_H
@@ -36,13 +46,14 @@ ssize_t rsi_write_response(int fd, const void *frame, size_t len);
 /*
  * rsi_respond_status - reply to @req with a status-only response.
  *
- * Use for the mutating ops on success (@status = RSI_OK) and for ANY op to report a
- * non-OK RSI_* status. Returns 0, or -1 with errno (EINVAL on a bad @req, or the
- * write(2) error).
+ * Use for status-only ops on success (@status = RSI_OK) and for ANY op to report a
+ * non-OK RSI_* status. Returns 0, or -1 with errno (EINVAL on a bad @req, unknown
+ * status, RSI_OK for a payload-bearing op, EIO on a short write, or the write(2)
+ * error).
  */
 int rsi_respond_status(int fd, const struct rsi_request *req, uint32_t status);
 
-/* ---- payload responses (read ops, on success) ----------------------------- */
+/* ---- payload-bearing success responses ------------------------------------ */
 
 /* One resolved path entry: a layer's view of a child (LOOKUP, ENUM_CHILDREN). */
 struct rsi_path_entry {
@@ -65,11 +76,22 @@ struct rsi_key_metadata {
 
 /*
  * rsi_respond_lookup - LOOKUP success: the path @entries for the looked-up child plus
- * the @metadata for each referenced key. Returns 0, or -1 with errno.
+ * the @metadata for each referenced key. Returns 0, or -1 with errno (EINVAL if @req
+ * is not a LOOKUP request, a nonzero count has a NULL array, or an entry has invalid
+ * target/boolean fields, missing/duplicate metadata, or unreferenced metadata).
  */
 int rsi_respond_lookup(int fd, const struct rsi_request *req,
 		       const struct rsi_path_entry *entries, uint32_t entry_count,
 		       const struct rsi_key_metadata *metadata, uint32_t metadata_count);
+
+/*
+ * rsi_respond_delete_layer - DELETE_LAYER success: @orphaned_guids is a flat
+ * orphaned_count * 16 byte array of key GUIDs orphaned by the deleted layer. Returns
+ * 0, or -1 with errno (EINVAL if @req is not a DELETE_LAYER request or a nonzero
+ * count has a NULL array, nil GUID, or duplicate GUID).
+ */
+int rsi_respond_delete_layer(int fd, const struct rsi_request *req,
+			     const uint8_t *orphaned_guids, uint32_t orphaned_count);
 
 /* One enumerated child: its name and the path entries that resolve it. */
 struct rsi_child_entry {
@@ -81,7 +103,10 @@ struct rsi_child_entry {
 
 /*
  * rsi_respond_enum_children - ENUM_CHILDREN success: each child with its path entries,
- * plus the @metadata for each referenced key. Returns 0, or -1 with errno.
+ * plus the @metadata for each referenced key. Returns 0, or -1 with errno (EINVAL if
+ * @req is not an ENUM_CHILDREN request, a nonzero count has a NULL array, or an entry
+ * has invalid target/boolean fields, missing/duplicate metadata, or unreferenced
+ * metadata).
  */
 int rsi_respond_enum_children(int fd, const struct rsi_request *req,
 			      const struct rsi_child_entry *children, uint32_t child_count,
@@ -89,7 +114,8 @@ int rsi_respond_enum_children(int fd, const struct rsi_request *req,
 
 /*
  * rsi_respond_read_key - READ_KEY success: the key's non-layered metadata. Returns 0,
- * or -1 with errno.
+ * or -1 with errno (EINVAL if @req is not a READ_KEY request, @parent_guid is NULL,
+ * or a boolean field is invalid).
  */
 int rsi_respond_read_key(int fd, const struct rsi_request *req, const void *name,
 			 uint32_t name_len, const uint8_t *parent_guid, const void *sd,
@@ -117,7 +143,8 @@ struct rsi_blanket_entry {
 
 /*
  * rsi_respond_query_values - QUERY_VALUES success: the value @entries plus the
- * @blankets (blanket tombstones). Returns 0, or -1 with errno.
+ * @blankets (blanket tombstones). Returns 0, or -1 with errno (EINVAL if @req is not a
+ * QUERY_VALUES request or a nonzero count has a NULL array).
  */
 int rsi_respond_query_values(int fd, const struct rsi_request *req,
 			     const struct rsi_value_entry *entries, uint32_t entry_count,
