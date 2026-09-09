@@ -1,0 +1,14 @@
+[package]
+name         = "dev.peios.librsi-debugsource"
+architecture = "noarch"
+description  = "Peios registry-source C ABI library debug sources"
+
+[provides]
+librsi-debugsource = "{{version}}-1"
+
+[dependencies]
+"dev.peios.librsi-debuginfo" = "= {{version}}-1"
+
+[files]
+"@source:LICENSE"   = "usr/share/licenses/dev.peios.librsi-debugsource/LICENSE"
+":usr/src/debug/**" = "usr/src/debug"

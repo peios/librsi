@@ -1,0 +1,13 @@
+[package]
+name        = "dev.peios.librsi-static"
+description = "Peios registry-source C ABI library static archive"
+
+[provides]
+librsi-static = "{{version}}-1"
+
+[dependencies]
+"dev.peios.librsi-devel" = "= {{version}}-1"
+
+[files]
+"@source:LICENSE"                      = "usr/share/licenses/dev.peios.librsi-static/LICENSE"
+":usr/lib/x86_64-linux-peios/librsi.a" = "usr/lib/x86_64-linux-peios/librsi.a"

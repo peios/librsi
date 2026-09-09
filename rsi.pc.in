@@ -1,0 +1,11 @@
+prefix=@prefix@
+exec_prefix=${prefix}
+libdir=@libdir@
+includedir=${prefix}/include
+
+Name: rsi
+Description: Peios registry-source C ABI library (librsi)
+URL: https://github.com/peios/librsi
+Version: @version@
+Libs: -L${libdir} -lrsi
+Cflags: -I${includedir}

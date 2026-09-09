@@ -1,14 +1,198 @@
-[env]
-TC = "$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
-PATH = "$TC:$PATH"
-CARGO = "$TC/cargo"
-RUSTC = "$TC/rustc"
+# librsi — Peios's registry-source C ABI library.
+#
+# One Rust build is split into the runtime shared object, development files,
+# static archive, debug symbols, debug sources, and a generated source package,
+# exactly as libpeios is. Network access is confined to build.vendor; build.main
+# and all tests consume only the Cargo.lock-pinned vendor tree and the matching
+# PKM UAPI snapshot.
 
-[build]
-command = "cargo build --release"
+out_dir = "out"
 
-[test]
-command = "cargo test"
+[source_package]
+name = "dev.peios.librsi-source"
 
-[clean]
-command = "cargo clean"
+[build.vendor]
+command = '''
+set -eu
+
+PKM_REV=a47c63854539fed12381307b3b3a74b6500fdf5c
+PKM_SHORT=$(printf %.7s "$PKM_REV")
+export CARGO_HOME=/tmp/cargo-librsi-vendor
+mkdir -p "$CARGO_HOME" "$PEKIT_OUT"
+
+grep -F "pkm.git?rev=$PKM_REV#$PKM_REV" Cargo.lock >/dev/null
+cargo vendor --locked "$PEKIT_OUT/vendor" > "$PEKIT_OUT/cargo-config.toml"
+test -s "$PEKIT_OUT/cargo-config.toml"
+test -n "$(find "$PEKIT_OUT/vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+
+# cargo vendor copies only the selected crates. librsi's public C headers also
+# include <pkm/lcs.h>, which lives beside those crates in the same locked PKM
+# Git checkout. Preserve that exact checkout's userspace UAPI as a build input.
+PKM_ROOT=
+for candidate in "$CARGO_HOME"/git/checkouts/pkm-*/*; do
+  [ -d "$candidate/uapi/pkm" ] || continue
+  [ "$(basename "$candidate")" = "$PKM_SHORT" ] || continue
+  [ -z "$PKM_ROOT" ] || { echo "multiple PKM checkouts match $PKM_REV" >&2; exit 1; }
+  PKM_ROOT=$candidate
+done
+test -n "$PKM_ROOT" || { echo "Cargo did not materialize locked PKM checkout $PKM_REV" >&2; exit 1; }
+cp -R "$PKM_ROOT/uapi" "$PEKIT_OUT/pkm-uapi"
+test -f "$PEKIT_OUT/pkm-uapi/pkm/lcs.h"
+'''
+
+[build.vendor.dependencies.peipkg]
+"org.git.kernel.dash" = "*"
+peiosutils             = "*"
+"org.gnu.findutils"   = "*"
+"org.gnu.grep"        = "*"
+"org.rust-lang.rust"  = ">= 1.98.1"
+
+[build.vendor.dependencies.apt]
+dash            = "*"
+coreutils       = "*"
+findutils       = "*"
+grep            = "*"
+cargo           = "*"
+rustc           = "*"
+ca-certificates = "*"
+
+[build.main]
+needs = ["vendor"]
+command = '''
+set -eu
+set -o pipefail 2>/dev/null || true
+
+SRC=$(pwd -P)
+TRIPLET=x86_64-linux-peios
+LIBDIR=usr/lib/$TRIPLET
+DEBUG_PREFIX=/usr/src/debug/dev.peios.librsi
+DEBUG_ROOT=$PEKIT_OUT$DEBUG_PREFIX
+PKM_UAPI=$PEKIT_VENDOR_OUT/pkm-uapi
+export CARGO_HOME=$PEKIT_OUT/cargo-home
+mkdir -p "$CARGO_HOME"
+cp "$PEKIT_VENDOR_OUT/cargo-config.toml" "$CARGO_HOME/config.toml"
+
+VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+test "$VERSION" = "$PEKIT_VERSION"
+test -f "$PKM_UAPI/pkm/lcs.h"
+
+# Keep all source references independent of checkout and build-root paths.
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$PEKIT_WORKSPACE_ROOT=$DEBUG_PREFIX/.workspace --remap-path-prefix=$PEKIT_OUT_BASE=$DEBUG_PREFIX/.build --remap-path-prefix=$PEKIT_VENDOR_OUT/vendor=$DEBUG_PREFIX/vendor --remap-path-prefix=$SRC=$DEBUG_PREFIX"
+
+# Tests and the release outputs use only the locked vendor tree.
+cargo test --release --locked --offline --target-dir "$PEKIT_OUT/target"
+CARGO_PROFILE_RELEASE_DEBUG=2 CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=off \
+  cargo build --release --locked --offline --target-dir "$PEKIT_OUT/target"
+
+# The checked C snapshot must match Rust, the hand-written public headers must
+# match that snapshot, and the built DSO must export exactly the checked API.
+PKM_UAPI="$PKM_UAPI" RSI_LIBRARY="$PEKIT_OUT/target/release/librsi.so" \
+  RSI_VERIFY_SNAPSHOT=auto \
+  ./tools/verify-abi.sh
+
+mkdir -p "$PEKIT_OUT/$LIBDIR" "$PEKIT_OUT/usr/include/rsi"
+cp "$PEKIT_OUT/target/release/librsi.so" "$PEKIT_OUT/$LIBDIR/librsi.so.0"
+ln -s librsi.so.0 "$PEKIT_OUT/$LIBDIR/librsi.so"
+cp "$PEKIT_OUT/target/release/librsi.a" "$PEKIT_OUT/$LIBDIR/librsi.a"
+cp include/rsi.h "$PEKIT_OUT/usr/include/"
+cp include/rsi/*.h "$PEKIT_OUT/usr/include/rsi/"
+
+mkdir -p "$PEKIT_OUT/$LIBDIR/pkgconfig"
+sed -e 's|@prefix@|/usr|g' \
+    -e "s|@libdir@|/$LIBDIR|g" \
+    -e "s|@version@|$VERSION|g" \
+    rsi.pc.in > "$PEKIT_OUT/$LIBDIR/pkgconfig/rsi.pc"
+
+# Prove the staged development surface works for both supported link modes.
+PC=$PEKIT_OUT/$LIBDIR/pkgconfig/rsi.pc
+test "$(PKG_CONFIG_LIBDIR=$(dirname "$PC") pkg-config --modversion rsi)" = "$VERSION"
+PKG_CONFIG_LIBDIR=$(dirname "$PC") pkg-config --libs rsi | grep -q -- '-lrsi'
+gcc -I "$PEKIT_OUT/usr/include" -I "$PKM_UAPI" tools/package-smoke.c \
+  -L "$PEKIT_OUT/$LIBDIR" -Wl,-rpath-link,"$PEKIT_OUT/$LIBDIR" -lrsi \
+  -o "$PEKIT_OUT/smoke-dynamic"
+LD_LIBRARY_PATH="$PEKIT_OUT/$LIBDIR" "$PEKIT_OUT/smoke-dynamic"
+gcc -I "$PEKIT_OUT/usr/include" -I "$PKM_UAPI" tools/package-smoke.c \
+  "$PEKIT_OUT/$LIBDIR/librsi.a" \
+  -o "$PEKIT_OUT/smoke-static"
+"$PEKIT_OUT/smoke-static"
+rm -f "$PEKIT_OUT/smoke-dynamic" "$PEKIT_OUT/smoke-static"
+
+# Split DWARF from the runtime DSO. The static archive keeps its symbol table
+# but not its embedded debug sections.
+SO=$PEKIT_OUT/$LIBDIR/librsi.so.0
+LIST=$PEKIT_OUT/.debug-sources
+debugedit -b "$SRC" -d "$DEBUG_PREFIX" -l "$LIST" -n "$SO"
+BUILD_ID=$(readelf -n "$SO" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+test -n "$BUILD_ID"
+FIRST=$(printf %s "$BUILD_ID" | cut -c1-2)
+REST=$(printf %s "$BUILD_ID" | cut -c3-)
+DEBUG=$PEKIT_OUT/usr/lib/debug/.build-id/$FIRST/$REST.debug
+mkdir -p "$(dirname "$DEBUG")"
+objcopy --only-keep-debug "$SO" "$DEBUG"
+strip --strip-unneeded "$SO"
+objcopy --add-gnu-debuglink="$DEBUG" "$SO"
+strip --strip-debug "$PEKIT_OUT/$LIBDIR/librsi.a"
+
+mkdir -p "$DEBUG_ROOT"
+tr '\0' '\n' < "$LIST" | LC_ALL=C sort -u | while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  case "$rel" in */) continue ;; esac
+  case "$rel" in
+    vendor/*) ORIGIN=$PEKIT_VENDOR_OUT/$rel ;;
+    *)        ORIGIN=$SRC/$rel ;;
+  esac
+  [ -f "$ORIGIN" ] || continue
+  mkdir -p "$DEBUG_ROOT/$(dirname "$rel")"
+  cp "$ORIGIN" "$DEBUG_ROOT/$rel"
+done
+rm -f "$LIST"
+test -n "$(find "$DEBUG_ROOT" -type f -print -quit)"
+
+# ELF policy and reproducibility gates.
+readelf -h "$SO" | grep -Eq 'Type:[[:space:]]+DYN'
+readelf -dW "$SO" | grep -q 'SONAME.*\[librsi.so.0\]'
+readelf -lW "$SO" | grep -q 'GNU_RELRO'
+readelf -lW "$SO" | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
+readelf -dW "$SO" | grep -q 'BIND_NOW'
+! readelf -dW "$SO" | grep -Eq '(RPATH|RUNPATH)'
+! readelf -SW "$SO" | grep -q '\.debug_info'
+! readelf -SW "$PEKIT_OUT/$LIBDIR/librsi.a" | grep -q '\.debug_info'
+readelf -SW "$DEBUG" | grep -q '\.debug_info'
+test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$BUILD_ID"
+! grep -aFl "$SRC" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"
+! grep -aFl "$PEKIT_OUT_BASE" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"
+'''
+
+[build.main.dependencies.peipkg]
+"org.git.kernel.dash"      = "*"
+"org.gnu.bash"             = "*"
+peiosutils                  = "*"
+"org.gnu.findutils"        = "*"
+"org.gnu.gawk"             = "*"
+"org.gnu.grep"             = "*"
+"org.gnu.sed"              = "*"
+"org.gnu.diffutils"        = "*"
+"org.rust-lang.rust"       = ">= 1.98.1"
+"org.gnu.gcc-c++"          = ">= 16, < 17"
+"org.gnu.binutils"         = "*"
+"org.sourceware.debugedit" = "*"
+"org.mozilla.cbindgen"     = "= 0.29.2-1"
+"org.pkgconf.pkgconf"      = "*"
+
+[build.main.dependencies.apt]
+dash       = "*"
+bash       = "*"
+coreutils  = "*"
+findutils  = "*"
+gawk       = "*"
+grep       = "*"
+sed        = "*"
+diffutils  = "*"
+cargo      = "*"
+rustc      = "*"
+gcc        = "*"
+"g++"      = "*"
+binutils   = "*"
+debugedit  = "*"
+cbindgen   = "*"
+pkgconf    = "*"

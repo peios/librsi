@@ -13,27 +13,54 @@
 #   4. compares every public *struct* on name set, field-name set, size, alignment,
 #      field offsets, and field sizes;
 #   5. compares the *data symbols* (if any);
-#   6. builds the release shared object and checks it has no unresolved dynamic
-#      symbols and exports exactly the header-declared `rsi_*` ABI symbols.
+#   6. proves the release shared object depends on nothing but libc and exports
+#      exactly the header-declared `rsi_*` ABI symbols.
 #
 # Steps 3-5 ignore only ABI-irrelevant spellings: parameter names, struct/enum tags,
 # `ptrdiff_t`≡`ssize_t` / `uintptr_t`≡`size_t`, and `enum`≡`int`.
 #
-# cbindgen must be on PATH; in this environment that means running the script under
-# nix:  nix-shell -p rust-cbindgen --run ./tools/verify-abi.sh
+# Environment (all optional in a developer checkout, all set by the package build):
+#   PKM_UAPI             directory holding pkm/*.h. Defaults to ../pkm/uapi, then
+#                        /usr/include.
+#   RSI_LIBRARY          the built librsi.so to check in step 6. When unset the
+#                        script builds it with `cargo build --release`.
+#   RSI_VERIFY_SNAPSHOT  `required` (default): cbindgen 0.29.2 must be present and
+#                        the snapshot must regenerate identically. `auto`: skip step 1
+#                        when that cbindgen is absent; every other step still runs.
+#
 # Exit status is non-zero on any mismatch.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."  # librsi crate root
 
 SNAPSHOT=abi/rsi-abi.h
-INC=(-I include -I ../pkm/uapi)
+REQUIRED_CBINDGEN_VERSION=0.29.2
+if [[ -n "${PKM_UAPI:-}" ]]; then
+  : # Explicit production-build input.
+elif [[ -d ../pkm/uapi ]]; then
+  PKM_UAPI=../pkm/uapi
+elif [[ -d /usr/include/pkm ]]; then
+  PKM_UAPI=/usr/include
+else
+  echo "FAIL: PKM_UAPI is unset and no PKM userspace headers were found" >&2
+  exit 1
+fi
+[[ -f "$PKM_UAPI/pkm/lcs.h" ]] \
+  || { echo "FAIL: $PKM_UAPI does not contain pkm/lcs.h" >&2; exit 1; }
+INC=(-I include -I "$PKM_UAPI")
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+have_required_cbindgen() {
+  command -v cbindgen >/dev/null 2>&1 || return 1
+  [[ "$(cbindgen --version | awk '{print $2}')" == "$REQUIRED_CBINDGEN_VERSION" ]]
+}
+
 run_cbindgen() {  # $1 = output path
-  command -v cbindgen >/dev/null 2>&1 \
-    || fail "cbindgen not on PATH — run this under nix, e.g. \`nix-shell -p rust-cbindgen --run ./tools/verify-abi.sh\`"
+  have_required_cbindgen \
+    || fail "cbindgen $REQUIRED_CBINDGEN_VERSION not on PATH (found: $(cbindgen --version 2>/dev/null || echo none)); install it or run \`nix-shell -p rust-cbindgen --run ./tools/verify-abi.sh\`"
   local err="$TMP/cbindgen.err"
   if ! cbindgen --config cbindgen.toml --lang c -o "$1" . 2>"$err"; then
     cat "$err" >&2
@@ -49,8 +76,6 @@ norm_fns() {
               s/ +/ /g; s/ ;$/;/; s/ $//' \
     | sort -u
 }
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 extract_structs() {
   grep -hoE '^struct rsi_[a-z_]+ \{' "$@" \
@@ -75,10 +100,25 @@ extract_fields() {
 }
 
 # --- 1. snapshot is up to date with the Rust source ------------------------------
-run_cbindgen "$TMP/gen.h"
-diff -u "$SNAPSHOT" "$TMP/gen.h" \
-  || fail "$SNAPSHOT is stale — the Rust ABI changed. Regenerate it (see abi/README.md)."
-echo "ok 1/6: snapshot is up to date with the Rust source"
+case "${RSI_VERIFY_SNAPSHOT:-required}" in
+  required)
+    run_cbindgen "$TMP/gen.h"
+    diff -u "$SNAPSHOT" "$TMP/gen.h" \
+      || fail "$SNAPSHOT is stale — the Rust ABI changed. Regenerate it (see abi/README.md)."
+    echo "ok 1/6: snapshot is up to date with the Rust source"
+    ;;
+  auto)
+    if have_required_cbindgen; then
+      run_cbindgen "$TMP/gen.h"
+      diff -u "$SNAPSHOT" "$TMP/gen.h" \
+        || fail "$SNAPSHOT is stale — the Rust ABI changed. Regenerate it (see abi/README.md)."
+      echo "ok 1/6: snapshot is up to date with the Rust source"
+    else
+      echo "skip 1/6: cbindgen $REQUIRED_CBINDGEN_VERSION not available; verifying against the committed snapshot"
+    fi
+    ;;
+  *) fail "RSI_VERIFY_SNAPSHOT must be 'required' or 'auto'" ;;
+esac
 
 printf '#include <rsi.h>\n'                    > "$TMP/hand.c"
 printf '#include "%s/%s"\n' "$PWD" "$SNAPSHOT" > "$TMP/snap.c"
@@ -154,20 +194,27 @@ diff "$TMP/hand.data" "$TMP/snap.data" \
   || fail "data-symbol mismatch ('<' hand-written, '>' Rust snapshot)"
 echo "ok 5/6: $(wc -l < "$TMP/hand.data") data symbol(s) match"
 
-# --- 6. shared object is dynamically loadable -------------------------------------
-cargo build --release >/dev/null
-ldd -r target/release/librsi.so > "$TMP/ldd-r.txt" 2>&1 \
-  || { cat "$TMP/ldd-r.txt" >&2; fail "release shared object failed ldd -r"; }
-if grep -q 'undefined symbol:' "$TMP/ldd-r.txt"; then
-  cat "$TMP/ldd-r.txt" >&2
-  fail "release shared object has unresolved dynamic symbol(s)"
+# --- 6. shared object is dynamically loadable and exports exactly the ABI --------
+if [[ -n "${RSI_LIBRARY:-}" ]]; then
+  [[ -f "$RSI_LIBRARY" ]] || fail "RSI_LIBRARY does not exist: $RSI_LIBRARY"
+  SO=$RSI_LIBRARY
+else
+  cargo build --release >/dev/null
+  SO=target/release/librsi.so
 fi
-nm -D --defined-only target/release/librsi.so | awk '{ print $3 }' | sort -u > "$TMP/exports.txt"
+# librsi depends on the C library and nothing else; any other NEEDED entry
+# means a stray link input. (Loadability itself is proven by the package
+# build's link-and-run smoke test, which needs no ldd in the build root.)
+readelf -dW "$SO" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u > "$TMP/needed.txt"
+printf 'libc.so.6\n' > "$TMP/needed.expected"
+diff "$TMP/needed.expected" "$TMP/needed.txt" \
+  || fail "unexpected dynamic dependencies ('<' expected, '>' shared object)"
+nm -D --defined-only "$SO" | awk '{ print $3 }' | sort -u > "$TMP/exports.txt"
 sed -E 's/.*[^A-Za-z0-9_](rsi_[a-z_]+)[[:space:]]*\(.*/\1/' "$TMP/hand.fns" \
   | sort -u > "$TMP/expected.exports"
 diff "$TMP/expected.exports" "$TMP/exports.txt" \
   || fail "dynamic export set mismatch ('<' headers, '>' release shared object)"
-echo "ok 6/6: release shared object has no unresolved symbols and exports exactly the rsi_* ABI"
+echo "ok 6/6: release shared object depends only on libc and exports exactly the rsi_* ABI"
 
 echo
 echo "ABI VERIFIED: the hand-written <rsi/*.h> headers are ABI-identical to the Rust source."
