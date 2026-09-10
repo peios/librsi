@@ -2,8 +2,6 @@
 name        = "dev.peios.librsi"
 description = "Peios registry-source C ABI library"
 
-[provides]
-librsi = "{{version}}-1"
 
 [files]
 "@source:LICENSE"                         = "usr/share/licenses/dev.peios.librsi/LICENSE"

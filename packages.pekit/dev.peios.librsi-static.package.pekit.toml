@@ -2,8 +2,6 @@
 name        = "dev.peios.librsi-static"
 description = "Peios registry-source C ABI library static archive"
 
-[provides]
-librsi-static = "{{version}}-1"
 
 [dependencies]
 "dev.peios.librsi-devel" = "= {{version}}-1"

@@ -3,8 +3,6 @@ name         = "dev.peios.librsi-debugsource"
 architecture = "noarch"
 description  = "Peios registry-source C ABI library debug sources"
 
-[provides]
-librsi-debugsource = "{{version}}-1"
 
 [dependencies]
 "dev.peios.librsi-debuginfo" = "= {{version}}-1"
