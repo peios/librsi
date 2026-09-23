@@ -5,7 +5,7 @@ description  = "Peios registry-source C ABI library debug sources"
 
 
 [dependencies]
-"dev.peios.librsi-debuginfo" = "= {{version}}-1"
+"dev.peios.librsi-debuginfo" = "= {{release}}"
 
 [files]
 "@source:LICENSE"   = "usr/share/licenses/dev.peios.librsi-debugsource/LICENSE"

@@ -63,8 +63,9 @@ export CARGO_HOME=$PEKIT_OUT/cargo-home
 mkdir -p "$CARGO_HOME"
 cp "$PEKIT_VENDOR_OUT/cargo-config.toml" "$CARGO_HOME/config.toml"
 
-VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-test "$VERSION" = "$PEKIT_VERSION"
+# The selected immutable source release versions the package and pkg-config API.
+# Cargo keeps its own locked crate version; the C ABI remains SONAME .so.0.
+VERSION=${PEKIT_VERSION:?missing selected source release version}
 test -f "$PKM_UAPI/pkm/lcs.h"
 
 # Keep all source references independent of checkout and build-root paths.
@@ -147,6 +148,9 @@ export CARGO_HOME=$PEKIT_OUT/cargo-home
 mkdir -p "$CARGO_HOME"
 cp "$PEKIT_VENDOR_OUT/cargo-config.toml" "$CARGO_HOME/config.toml"
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$PEKIT_WORKSPACE_ROOT=/usr/src/debug/dev.peios.librsi/.workspace --remap-path-prefix=$PEKIT_OUT_BASE=/usr/src/debug/dev.peios.librsi/.build --remap-path-prefix=$PEKIT_VENDOR_OUT/vendor=/usr/src/debug/dev.peios.librsi/vendor --remap-path-prefix=$SRC=/usr/src/debug/dev.peios.librsi"
+# The tests build the same CET-instrumented code as build.main (PEI-1155).
+export RUSTC_BOOTSTRAP=1
+RUSTFLAGS="$RUSTFLAGS -Zcf-protection=full"
 cargo test --release --locked --offline --target-dir "$PEKIT_OUT/target"
 
 # The remaining checks exercise the exact staged package output.
@@ -177,13 +181,13 @@ readelf -dW "$SO" | grep -q 'SONAME.*\[librsi.so.0\]'
 readelf -lW "$SO" | grep -q 'GNU_RELRO'
 readelf -lW "$SO" | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
 readelf -dW "$SO" | grep -q 'BIND_NOW'
-! readelf -dW "$SO" | grep -Eq '(RPATH|RUNPATH)'
-! readelf -SW "$SO" | grep -q '\.debug_info'
-! readelf -SW "$PEKIT_OUT/$LIBDIR/librsi.a" | grep -q '\.debug_info'
+if readelf -dW "$SO" | grep -Eq '(RPATH|RUNPATH)'; then echo "librsi.so.0 has an RPATH or RUNPATH" >&2; exit 1; fi
+if readelf -SW "$SO" | grep -q '\.debug_info'; then echo "librsi.so.0 still carries .debug_info" >&2; exit 1; fi
+if readelf -SW "$PEKIT_OUT/$LIBDIR/librsi.a" | grep -q '\.debug_info'; then echo "librsi.a still carries .debug_info" >&2; exit 1; fi
 readelf -SW "$DEBUG" | grep -q '\.debug_info'
 test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$BUILD_ID"
-! grep -aFl "$SRC" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"
-! grep -aFl "$PEKIT_OUT_BASE" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"
+if grep -aFl "$SRC" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"; then echo "staged output embeds the source path" >&2; exit 1; fi
+if grep -aFl "$PEKIT_OUT_BASE" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"; then echo "staged output embeds the build path" >&2; exit 1; fi
 '''
 
 [test.dependencies.peipkg]
@@ -196,7 +200,7 @@ test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" 
 "org.gnu.sed"              = "*"
 "org.gnu.diffutils"        = "*"
 "org.rust-lang.rust"       = ">= 1.98.1"
-"org.gnu.gcc-c++"          = ">= 16, < 17"
+"org.gnu.gcc-c++"          = ">= 16"
 "org.gnu.binutils"         = "*"
 "org.sourceware.debugedit" = "*"
 "org.mozilla.cbindgen"     = "= 0.29.2-1"
@@ -212,7 +216,7 @@ test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" 
 "org.gnu.sed"              = "*"
 "org.gnu.diffutils"        = "*"
 "org.rust-lang.rust"       = ">= 1.98.1"
-"org.gnu.gcc-c++"          = ">= 16, < 17"
+"org.gnu.gcc-c++"          = ">= 16"
 "org.gnu.binutils"         = "*"
 "org.sourceware.debugedit" = "*"
 "org.mozilla.cbindgen"     = "= 0.29.2-1"

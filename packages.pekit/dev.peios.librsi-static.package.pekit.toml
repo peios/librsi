@@ -4,7 +4,7 @@ description = "Peios registry-source C ABI library static archive"
 
 
 [dependencies]
-"dev.peios.librsi-devel" = "= {{version}}-1"
+"dev.peios.librsi-devel" = "= {{release}}"
 
 [files]
 "@source:LICENSE"                      = "usr/share/licenses/dev.peios.librsi-static/LICENSE"

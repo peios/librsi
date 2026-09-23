@@ -65,6 +65,7 @@ core::arch::global_asm!(
     ".globl rust_eh_personality",
     ".type rust_eh_personality, @function",
     "rust_eh_personality:",
+    "endbr64",
     "mov eax, 3",
     "ret",
     ".size rust_eh_personality, . - rust_eh_personality",

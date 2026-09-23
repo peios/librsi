@@ -4,9 +4,9 @@ description = "Peios registry-source C ABI library development files"
 
 
 [dependencies]
-"dev.peios.librsi" = "= {{version}}-1"
+"dev.peios.librsi" = "= {{release}}"
 # Public librsi headers include the Peios kernel UAPI under <pkm/lcs.h>.
-"dev.peios.kernel-headers" = ">= 0.20.1-rc2"
+"dev.peios.kernel-headers" = ">= 0.20.1-rc13-1"
 
 [files]
 "@source:LICENSE"                              = "usr/share/licenses/dev.peios.librsi-devel/LICENSE"

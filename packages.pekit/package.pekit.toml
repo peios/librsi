@@ -1,8 +1,4 @@
-# Shared metadata for the librsi package family. 0.1.1-1 was the first packaged
-# release, built from the local tree before v0.1.1 was tagged and therefore
-# without a -source package; the repository retains it unchanged. 0.1.2-1 is
-# the first tag-built release and supersedes it. There were no earlier
-# packages, so nothing is replaced.
+# Shared metadata for the librsi package family.
 
 format = "peipkg"
 
