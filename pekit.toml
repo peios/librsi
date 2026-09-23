@@ -47,15 +47,6 @@ test -f "$PEKIT_OUT/pkm-uapi/pkm/lcs.h"
 "org.gnu.grep"        = "*"
 "org.rust-lang.rust"  = ">= 1.98.1"
 
-[build.vendor.dependencies.apt]
-dash            = "*"
-coreutils       = "*"
-findutils       = "*"
-grep            = "*"
-cargo           = "*"
-rustc           = "*"
-ca-certificates = "*"
-
 [build.main]
 needs = ["vendor"]
 command = '''
@@ -211,24 +202,6 @@ test "$(readelf -n "$DEBUG" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" 
 "org.mozilla.cbindgen"     = "= 0.29.2-1"
 "org.pkgconf.pkgconf"      = "*"
 
-[test.dependencies.apt]
-dash       = "*"
-bash       = "*"
-coreutils  = "*"
-findutils  = "*"
-gawk       = "*"
-grep       = "*"
-sed        = "*"
-diffutils  = "*"
-cargo      = "*"
-rustc      = "*"
-gcc        = "*"
-"g++"      = "*"
-binutils   = "*"
-debugedit  = "*"
-cbindgen   = "*"
-pkgconf    = "*"
-
 [build.main.dependencies.peipkg]
 "org.git.kernel.dash"      = "*"
 "org.gnu.bash"             = "*"
@@ -244,21 +217,3 @@ pkgconf    = "*"
 "org.sourceware.debugedit" = "*"
 "org.mozilla.cbindgen"     = "= 0.29.2-1"
 "org.pkgconf.pkgconf"      = "*"
-
-[build.main.dependencies.apt]
-dash       = "*"
-bash       = "*"
-coreutils  = "*"
-findutils  = "*"
-gawk       = "*"
-grep       = "*"
-sed        = "*"
-diffutils  = "*"
-cargo      = "*"
-rustc      = "*"
-gcc        = "*"
-"g++"      = "*"
-binutils   = "*"
-debugedit  = "*"
-cbindgen   = "*"
-pkgconf    = "*"
