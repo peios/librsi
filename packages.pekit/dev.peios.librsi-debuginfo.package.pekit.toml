@@ -8,4 +8,5 @@ description = "Peios registry-source C ABI library debugging symbols"
 
 [files]
 "@source:LICENSE"   = "usr/share/licenses/dev.peios.librsi-debuginfo/LICENSE"
+":licenses/**"      = "usr/share/licenses/dev.peios.librsi-debuginfo/third-party"
 ":usr/lib/debug/**" = "usr/lib/debug"

@@ -88,6 +88,18 @@ PKM_UAPI="$PKM_UAPI" RSI_LIBRARY="$PEKIT_OUT/target/release/librsi.so" \
   RSI_VERIFY_SNAPSHOT=auto \
   ./tools/verify-abi.sh
 
+# Both the DSO and the static archive link every crate in librsi's closure,
+# so their notices ship with them, and the family's declared licence must be
+# the conjunction of what those crates declare (PEI-1163). peios-uapi (from
+# the pinned PKM checkout) carries no notice of its own; ship the reviewed MIT
+# notice of the same PKM source.
+LICENSE_ROOT=$PEKIT_OUT/licenses
+/usr/libexec/peios-packaging/collect-rust-licences \
+  --licence-root "$LICENSE_ROOT" --root librsi \
+  --notice "git+https://github.com/peios/pkm.git=third-party/peios-uapi-LICENSE" \
+  --check packages.pekit/package.pekit.toml
+test -s "$LICENSE_ROOT/crate-licenses.tsv"
+
 mkdir -p "$PEKIT_OUT/$LIBDIR" "$PEKIT_OUT/usr/include/rsi"
 cp "$PEKIT_OUT/target/release/librsi.so" "$PEKIT_OUT/$LIBDIR/librsi.so.0"
 ln -s librsi.so.0 "$PEKIT_OUT/$LIBDIR/librsi.so"
@@ -102,7 +114,12 @@ sed -e 's|@prefix@|/usr|g' \
     rsi.pc.in > "$PEKIT_OUT/$LIBDIR/pkgconfig/rsi.pc"
 
 # Split DWARF from the runtime DSO. The static archive keeps its symbol table
-# but not its embedded debug sections.
+# but not its embedded debug sections. This stays local rather than using
+# /usr/libexec/peios-packaging/split-debug: RUSTFLAGS above already remap the
+# source tree and the vendor target's crates (a separate output tree) to
+# $DEBUG_PREFIX and $DEBUG_PREFIX/vendor, so DWARF no longer names a build
+# root split-debug could copy sources from, and it would drop the vendored
+# crates' sources that this loop resolves back to $PEKIT_VENDOR_OUT.
 SO=$PEKIT_OUT/$LIBDIR/librsi.so.0
 LIST=$PEKIT_OUT/.debug-sources
 debugedit -b "$SRC" -d "$DEBUG_PREFIX" -l "$LIST" -n "$SO"
@@ -221,3 +238,4 @@ if grep -aFl "$PEKIT_OUT_BASE" "$SO" "$PEKIT_OUT/$LIBDIR/librsi.a" "$DEBUG"; the
 "org.sourceware.debugedit" = "*"
 "org.mozilla.cbindgen"     = "= 0.29.2-1"
 "org.pkgconf.pkgconf"      = "*"
+"dev.peios.packaging-tools" = "*"

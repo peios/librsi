@@ -1,6 +1,8 @@
 [package]
 name        = "dev.peios.librsi-devel"
 description = "Peios registry-source C ABI library development files"
+# Headers and link metadata only: no linked crate code.
+license     = "MIT"
 
 
 [dependencies]

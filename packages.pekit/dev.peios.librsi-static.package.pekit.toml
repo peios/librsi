@@ -8,4 +8,5 @@ description = "Peios registry-source C ABI library static archive"
 
 [files]
 "@source:LICENSE"                      = "usr/share/licenses/dev.peios.librsi-static/LICENSE"
+":licenses/**"                         = "usr/share/licenses/dev.peios.librsi-static/third-party"
 ":usr/lib/x86_64-linux-peios/librsi.a" = "usr/lib/x86_64-linux-peios/librsi.a"
